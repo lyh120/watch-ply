@@ -87,7 +87,7 @@
   </div>
   <div class="row">
     <button id="reset" style="width:48%">复位视角</button>
-    <button id="shot" style="width:48%">保存截图 PNG</button>
+    <button id="shot" style="width:48%" title="选择保存位置并写入标准 PNG 文件">保存截图 PNG</button>
   </div>
   <hr>
   <div class="hint">图层 / layers</div>
@@ -808,10 +808,54 @@ $("heightcolor").onchange = recolorAll;
 $("grid").onchange = () => grid.visible = $("grid").checked;
 $("bgdark").onchange = () => scene.background.set($("bgdark").checked ? 0x101418 : 0xf2f4f7);
 $("reset").onclick = fitView;
-$("shot").onclick = () => { renderer.render(scene, camera);
-  const a = document.createElement("a");
-  a.download = "viewer_screenshot.png"; a.href = renderer.domElement.toDataURL("image/png");
-  a.click(); };
+function canvasPngBlob(){
+  return new Promise((resolve, reject) => renderer.domElement.toBlob(
+    blob => blob && blob.size ? resolve(blob) : reject(new Error("浏览器未能生成 PNG 数据")),
+    "image/png"));
+}
+
+$("shot").onclick = async () => {
+  const button = $("shot");
+  button.disabled = true;
+  try{
+    const name = "pointcloud_" + new Date().toISOString().replace(/[:.]/g,"-") + ".png";
+    let handle = null;
+    if (typeof window.showSaveFilePicker === "function"){
+      // A user-selected file is written directly, avoiding the Windows download-zone
+      // marker that may be attached to data:/blob: downloads from a local HTML file.
+      // Open the picker before awaiting image encoding to preserve the click's user gesture.
+      handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [{description:"PNG 图像", accept:{"image/png":[".png"]}}]
+      });
+    }
+    renderer.render(scene, camera);
+    const blob = await canvasPngBlob();
+    if (handle){
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      status("截图已保存：<b>" + handle.name + "</b>（" +
+             (blob.size/1024).toFixed(0) + " KB）");
+    } else {
+      // Firefox/Safari fallback. Blob URLs are more reliable than a very large data URL.
+      const url = URL.createObjectURL(blob), a = document.createElement("a");
+      a.download = name; a.href = url; a.style.display = "none";
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      status("截图已生成：<b>" + name + "</b>（请查看浏览器下载目录）");
+    }
+  }catch(e){
+    if (e && e.name === "AbortError") status("已取消保存截图");
+    else {
+      console.error(e);
+      $("err").textContent = "截图保存失败：" + (e.message || e);
+      status("截图保存失败，详情见左侧红色提示");
+    }
+  }finally{
+    button.disabled = false;
+  }
+};
 $("panelToggle").onclick = () => { const p = $("panel"); p.classList.toggle("collapsed");
   const hide = p.classList.contains("collapsed");
   for (const el of p.children) if (el.id !== "panelToggle" && el.tagName !== "H1")
