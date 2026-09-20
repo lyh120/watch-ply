@@ -193,18 +193,4 @@ COLMAP bin/txt 解析和相机视锥导出。
 **网页查看器无法加载依赖**  
 请保持 `viewer.html` 与 `libs/` 的相对位置不变；该项目不需要联网下载 Three.js。
 
-## 建立并推送 GitHub 仓库
 
-确认 Demo 图和 README 显示正常后，可在项目根目录执行：
-
-```bash
-git init
-git add .
-git commit -m "feat: initial point cloud viewer"
-git branch -M main
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git push -u origin main
-```
-
-如果后续要加入体积很大的训练点云，建议使用 Git LFS，或只在 README 中提供下载链接，
-避免把大型 `.ply` 直接提交到普通 Git 历史中。
