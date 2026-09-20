@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>3DGS Point Cloud Viewer</title>
+<style>
+  html, body { margin:0; height:100%; overflow:hidden; background:#101418;
+               font-family:"Segoe UI",system-ui,sans-serif; color:#dde3ea; }
+  #c { position:fixed; inset:0; display:block; }
+  #panel { position:fixed; top:12px; left:12px; width:295px; max-height:calc(100% - 70px);
+           overflow-y:auto; background:rgba(16,20,24,.88); backdrop-filter:blur(6px);
+           border:1px solid #2a3340; border-radius:10px; padding:12px 14px; z-index:10;
+           font-size:13px; line-height:1.45; }
+  #panel h1 { font-size:15px; margin:0 0 8px; color:#fff; }
+  #panel h1 small { color:#7f8ea0; font-weight:normal; }
+  #panel.collapsed { width:auto; }
+  .row { margin:8px 0; }
+  .row label { display:block; color:#9fb0c0; margin-bottom:2px; }
+  .row input[type=range] { width:100%; }
+  .row input[type=text], .row input[type=number] {
+       width:56px; background:#0b0e12; color:#dde3ea; border:1px solid #2a3340;
+       border-radius:5px; padding:3px 5px; }
+  button { background:#1d2733; color:#dde3ea; border:1px solid #33445a;
+           border-radius:6px; padding:5px 10px; cursor:pointer; font-size:13px; }
+  button:hover { background:#28374a; }
+  button.primary { background:#2563a8; border-color:#3b82c4; }
+  button.primary:hover { background:#2f74c0; }
+  #openFile { width:100%; padding:8px; font-size:14px; }
+  .hint { color:#7f8ea0; font-size:12px; }
+  #status { position:fixed; left:12px; bottom:12px; right:12px; z-index:10;
+            background:rgba(16,20,24,.85); border:1px solid #2a3340; border-radius:8px;
+            padding:6px 12px; font-size:12.5px; color:#aebdc9; display:flex; gap:18px;
+            align-items:center; flex-wrap:wrap; }
+  #status b { color:#fff; }
+  #drop { position:fixed; inset:0; z-index:99; display:none; align-items:center;
+          justify-content:center; background:rgba(10,60,120,.35); font-size:26px;
+          color:#fff; border:3px dashed #6ab0ff; box-sizing:border-box; }
+  #err { color:#ff9d9d; white-space:pre-wrap; }
+  .layer { display:flex; align-items:center; gap:6px; margin:3px 0; }
+  .layer span { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .layer button { padding:0 6px; font-size:11px; }
+  #panelToggle { position:absolute; top:10px; right:10px; padding:0 8px; }
+  #campos { display:none; }
+  hr { border:0; border-top:1px solid #2a3340; margin:10px 0; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div id="panel">
+  <button id="panelToggle" title="collapse">–</button>
+  <h1>3DGS Point Cloud Viewer <small>· offline</small></h1>
+  <button id="openFile" class="primary">📂 打开文件 / Open (.ply .splat .obj .bin)</button>
+  <button id="openFolder" style="width:100%; margin-top:6px">📁 选择 COLMAP sparse 文件夹<br>
+    <span style="font-size:11px;color:#9fb0c0">选 sparse/0 文件夹 → 点云 + 相机视锥</span></button>
+  <div class="hint">或把文件/文件夹直接拖进窗口：3DGS 训练 PLY、彩色点云 PLY、.splat、
+       COLMAP 的 points3D.bin；拖整个数据集根目录也行（自动只读取相关文件）。</div>
+  <input type="file" id="file" multiple accept=".ply,.splat,.obj,.bin,.txt" style="display:none">
+  <input type="file" id="folder" webkitdirectory multiple style="display:none">
+
+  <hr>
+  <div class="row">
+    <label>上色模式 / Color mode
+      <select id="mode" style="float:right;background:#0b0e12;color:#dde3ea;border:1px solid #2a3340;border-radius:5px;padding:2px">
+        <option value="dc">DC 基础色（快）</option>
+        <option value="sh">完整 SH（指定机位）</option>
+      </select>
+    </label>
+  </div>
+  <div class="row" id="campos">
+    <label>SH 观察机位 camera pos (x y z)：
+      <input type="text" id="cpx" value="0"> <input type="text" id="cpy" value="0">
+      <input type="text" id="cpz" value="0">
+      <button id="applySh" style="float:right">应用</button>
+    </label>
+  </div>
+  <div class="row"><label>最小不透明度 <span id="opv" style="float:right">0.00</span></label>
+    <input type="range" id="op" min="0" max="0.5" step="0.01" value="0"></div>
+  <div class="row"><label>点大小 / point size <span id="pszv" style="float:right">2 px</span></label>
+    <input type="range" id="psz" min="1" max="8" step="0.5" value="2"></div>
+  <div class="row"><label>最大点数（自动抽稀） <input type="text" id="cap" value="3000000" style="width:90px"></label></div>
+  <div class="row">
+    <label><input type="checkbox" id="flipY" checked> 翻转Y（COLMAP/3DGS 是Y朝下坐标系）</label>
+    <label><input type="checkbox" id="heightcolor" checked> 无颜色点云按高度上色</label>
+    <label><input type="checkbox" id="grid" checked> 显示地面网格</label>
+    <label><input type="checkbox" id="bgdark" checked> 深色背景</label>
+  </div>
+  <div class="row">
+    <button id="reset" style="width:48%">复位视角</button>
+    <button id="shot" style="width:48%">保存截图 PNG</button>
+  </div>
+  <hr>
+  <div class="hint">图层 / layers</div>
+  <div id="layers"></div>
+  <div id="err"></div>
+  <hr>
+  <div class="hint">鼠标：左键拖=旋转 · 右键拖=平移 · 滚轮=缩放</div>
+</div>
+
+<div id="drop">松开以加载文件</div>
+<div id="status"><span>就绪</span></div>
+
+<script src="libs/three.min.js"></script>
+<script src="libs/OrbitControls.js"></script>
+<script>
+"use strict";
+/* ============================== three.js setup ========================= */
+const canvas = document.getElementById("c");
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101418);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.01, 5000);
+camera.position.set(3, 2, 5);
+const controls = new THREE.OrbitControls(camera, canvas);
+controls.enableDamping = true; controls.dampingFactor = 0.08;
+const grid = new THREE.GridHelper(10, 20, 0x3a4a5a, 0x232c36);
+scene.add(grid);
+
+function resize(){ renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth/innerHeight; camera.updateProjectionMatrix(); }
+addEventListener("resize", resize); resize();
+(function loop(){ requestAnimationFrame(loop); controls.update(); renderer.render(scene, camera); })();
+
+/* ============================== state ================================== */
+const layers = [];              // {name, kind:'points'|'lines', obj3d, pts?..., n}
+const $ = id => document.getElementById(id);
+const status = (html) => $("status").innerHTML = html;
+
+/* ============================ 3DGS math (exact) ======================== */
+const C0 = 0.28209479177387814, C1 = 0.4886025119029199;
+const C2 = [1.0925484305920792,-1.0925484305920792,0.31539156525252005,
+            -1.0925484305920792,0.5900435899266435];
+const C3 = [-0.5900435899266435,2.890611442640554,-0.4570457994644658,
+            0.3731763325901154,-0.4570457994644658,1.445305721320277,
+            -1.445305721320277];
+
+/* evaluate SH (degree<=3) exactly like gaussian-splatting; sh = Float32Array n*k*3 (k=16) */
+function shToRgb(n, k, sh, xyz, campos, out){
+  const dx = new Float64Array(3);
+  for (let i=0; i<n; i++){
+    const px=xyz[3*i]-campos[0], py=xyz[3*i+1]-campos[1], pz=xyz[3*i+2]-campos[2];
+    const len = Math.hypot(px,py,pz) || 1;
+    const x=px/len, y=py/len, z=pz/len;
+    const xx=x*x, yy=y*y, zz=z*z, xy=x*y, yz=y*z, xz=x*z;
+    let r = C0*sh[i*48+0], g = C0*sh[i*48+1], b = C0*sh[i*48+2];
+    if (k > 1){
+      r += -C1*y*sh[i*48+3]  + C1*z*sh[i*48+6]  - C1*x*sh[i*48+9];
+      g += -C1*y*sh[i*48+4]  + C1*z*sh[i*48+7]  - C1*x*sh[i*48+10];
+      b += -C1*y*sh[i*48+5]  + C1*z*sh[i*48+8]  - C1*x*sh[i*48+11];
+    }
+    if (k > 4){
+      const t0 = C2[0]*xy, t1 = C2[1]*yz, t2 = C2[2]*(2*zz-xx-yy),
+            t3 = C2[3]*xz, t4 = C2[4]*(2*xx-yy-zz);
+      r += t0*sh[i*48+12] + t1*sh[i*48+15] + t2*sh[i*48+18] + t3*sh[i*48+21] + t4*sh[i*48+24];
+      g += t0*sh[i*48+13] + t1*sh[i*48+16] + t2*sh[i*48+19] + t3*sh[i*48+22] + t4*sh[i*48+25];
+      b += t0*sh[i*48+14] + t1*sh[i*48+17] + t2*sh[i*48+20] + t3*sh[i*48+23] + t4*sh[i*48+26];
+    }
+    if (k > 9){
+      const u0 = C3[0]*yz*(3*xx-yy), u1 = C3[1]*xy*z, u2 = C3[2]*xy*(4*zz-xx-yy),
+            u3 = C3[3]*z*(4*zz-xx-yy), u4 = C3[4]*xz*(4*zz-xx-yy),
+            u5 = C3[5]*x*(4*xx-yy-zz), u6 = C3[6]*x*(xx-3*yy);
+      r += u0*sh[i*48+27] + u1*sh[i*48+30] + u2*sh[i*48+33] + u3*sh[i*48+36] + u4*sh[i*48+39] + u5*sh[i*48+42] + u6*sh[i*48+45];
+      g += u0*sh[i*48+28] + u1*sh[i*48+31] + u2*sh[i*48+34] + u3*sh[i*48+37] + u4*sh[i*48+40] + u5*sh[i*48+43] + u6*sh[i*48+46];
+      b += u0*sh[i*48+29] + u1*sh[i*48+32] + u2*sh[i*48+35] + u3*sh[i*48+38] + u4*sh[i*48+41] + u5*sh[i*48+44] + u6*sh[i*48+47];
+    }
+    out[3*i]   = Math.min(1, Math.max(0, r + 0.5));
+    out[3*i+1] = Math.min(1, Math.max(0, g + 0.5));
+    out[3*i+2] = Math.min(1, Math.max(0, b + 0.5));
+  }
+}
+
+/* ============================== PLY parsing ============================ */
+const PLY_SIZE = {char:1,int8:1,uchar:1,uint8:1,short:2,int16:2,ushort:2,uint16:2,
+                  int:4,int32:4,uint:4,uint32:4,float:4,float32:4,double:8,float64:8,
+                  int64:8,uint64:8};
+
+function parsePlyHeader(buf){
+  const head = new Uint8Array(buf, 0, Math.min(buf.byteLength, 1<<16));
+  let s = ""; for (let i=0;i<head.length;i++) s += String.fromCharCode(head[i]);
+  const end = s.indexOf("end_header");
+  if (s.slice(0,3) !== "ply" || end < 0) throw new Error("不是合法的 PLY 文件");
+  let dataStart = end + "end_header".length;
+  if (s[dataStart] === "\r") dataStart++;
+  if (s[dataStart] === "\n") dataStart++;
+  let format = "ascii", elements = [], cur = null;
+  for (const line of s.slice(0, end).split(/\r?\n/)){
+    const p = line.trim().split(/\s+/);
+    if (p[0] === "format") format = p[1];
+    else if (p[0] === "element"){ cur = {name:p[1], count:parseInt(p[2]), props:[]}; elements.push(cur); }
+    else if (p[0] === "property" && cur) cur.props.push({type:p[1], name:p[p.length-1]});
+  }
+  return {format, elements, dataStart};
+}
+
+function readPlyVertex(buf, filename){
+  const H = parsePlyHeader(buf);
+  const vtx = H.elements.find(e => e.name === "vertex");
+  if (!vtx) throw new Error(filename + ": PLY 里没有 vertex 元素");
+  let prefix = 0;
+  for (const e of H.elements){
+    if (e === vtx) break;
+    if (e.props.some(p => p.type === "list")) throw new Error("vertex 之前出现 list 元素，暂不支持");
+    prefix += e.count * e.props.reduce((a,p)=>a+PLY_SIZE[p.type],0);
+  }
+  const names = vtx.props.map(p=>p.name);
+  const stride = vtx.props.reduce((a,p)=>a+PLY_SIZE[p.type],0);
+  const n = vtx.count;
+  const off = {};
+  names.forEach((nm,i)=>{ off[nm] = vtx.props.slice(0,i).reduce((a,p)=>a+PLY_SIZE[p.type],0); });
+  const base = H.dataStart + prefix;
+
+  if (H.format.startsWith("binary")){
+    const le = H.format === "binary_little_endian";
+    const dv = new DataView(buf, base);
+    const col = {};
+    for (const nm of names) col[nm] = new Float32Array(n);
+    // precompute descriptors once: {out, byteOffset, reader} -> O(n * nProps)
+    const desc = names.map((nm, i) => {
+      const p = vtx.props[i], o = off[nm];
+      let rd;
+      switch (p.type){
+        case "float": case "float32": rd = (d,o2)=>d.getFloat32(o2,le); break;
+        case "double": case "float64": rd = (d,o2)=>d.getFloat64(o2,le); break;
+        case "uchar": case "uint8": rd = (d,o2)=>d.getUint8(o2); break;
+        case "char": case "int8": rd = (d,o2)=>d.getInt8(o2); break;
+        case "ushort": case "uint16": rd = (d,o2)=>d.getUint16(o2,le); break;
+        case "short": case "int16": rd = (d,o2)=>d.getInt16(o2,le); break;
+        case "uint": case "uint32": rd = (d,o2)=>d.getUint32(o2,le); break;
+        case "int64": rd = (d,o2)=>Number(d.getBigInt64(o2,le)); break;
+        case "uint64": rd = (d,o2)=>Number(d.getBigUint64(o2,le)); break;
+        default: rd = (d,o2)=>d.getInt32(o2,le);
+      }
+      return {out: col[nm], o, rd};
+    });
+    for (let i=0; i<n; i++){
+      const ro = i*stride;
+      for (const d of desc) d.out[i] = d.rd(dv, ro + d.o);
+    }
+    return {n, col, names, kind: classify(names)};
+  }
+  // ascii
+  const dv2 = new DataView(buf, base);
+  let text = ""; const chunk = 1<<24;
+  for (let p=0; p<dv2.byteLength; p+=chunk)
+    text += String.fromCharCode.apply(null,
+      new Uint8Array(buf, base+p, Math.min(chunk, dv2.byteLength-p)));
+  const toks = text.split(/\s+/);
+  const colA = {}; for (const nm of names) colA[nm] = new Float32Array(n);
+  let t = 0;
+  for (let i=0;i<n;i++) for (const nm of names) colA[nm][i] = parseFloat(toks[t++]);
+  return {n, col: colA, names, kind: classify(names)};
+}
+
+/* robust color-property detection: red/green/blue, r/g/b, diffuse_red, ... */
+function findColorNames(names){
+  const lower = {}; for (const n of names) lower[n.toLowerCase()] = n;
+  const pick = (base) => {
+    if (lower[base] !== undefined) return lower[base];       // "red"
+    if (lower[base[0]] !== undefined) return lower[base[0]]; // "r"
+    const k = Object.keys(lower).find(k => k.includes(base)); // "diffuse_red"
+    return k === undefined ? null : lower[k];
+  };
+  const r = pick("red"), g = pick("green"), b = pick("blue");
+  return (r && g && b) ? {red:r, green:g, blue:b} : null;
+}
+function classify(names){
+  const s = new Set(names.map(n => n.toLowerCase()));
+  if (s.has("f_dc_0")) return "3dgs";
+  if (findColorNames(names)) return "rgb";
+  return "plain";
+}
+
+/* ============================ .splat parsing =========================== */
+function readSplat(buf){
+  const n = Math.floor(buf.byteLength / 32);
+  const dv = new DataView(buf);
+  const col = {x:new Float32Array(n), y:new Float32Array(n), z:new Float32Array(n),
+               red:new Float32Array(n), green:new Float32Array(n), blue:new Float32Array(n),
+               opacity:new Float32Array(n), scale_0:new Float32Array(n),
+               scale_1:new Float32Array(n), scale_2:new Float32Array(n)};
+  for (let i=0;i<n;i++){
+    const o = i*32;
+    col.x[i]=dv.getFloat32(o,true); col.y[i]=dv.getFloat32(o+4,true); col.z[i]=dv.getFloat32(o+8,true);
+    col.scale_0[i]=dv.getFloat32(o+12,true); col.scale_1[i]=dv.getFloat32(o+16,true); col.scale_2[i]=dv.getFloat32(o+20,true);
+    col.red[i]=dv.getUint8(o+24); col.green[i]=dv.getUint8(o+25); col.blue[i]=dv.getUint8(o+26);
+    col.opacity[i]=dv.getUint8(o+27)/255;
+  }
+  return {n, col, kind:"splat"};
+}
+
+/* ====================== COLMAP native formats ========================== */
+const _u64 = (dv,off) => dv.getUint32(off,true) + dv.getUint32(off+4,true)*4294967296;
+
+function readPoints3DBin(buf){
+  const dv = new DataView(buf);
+  let o = 0;
+  const n = _u64(dv, o); o += 8;
+  const x=new Float32Array(n), y=new Float32Array(n), z=new Float32Array(n),
+        r=new Float32Array(n), g=new Float32Array(n), b=new Float32Array(n);
+  for (let i=0;i<n;i++){
+    o += 8;                                   // point3D id (uint64)
+    x[i]=dv.getFloat64(o,true); y[i]=dv.getFloat64(o+8,true); z[i]=dv.getFloat64(o+16,true);
+    o += 24;
+    r[i]=dv.getUint8(o); g[i]=dv.getUint8(o+1); b[i]=dv.getUint8(o+2); o += 3;
+    o += 8;                                   // reprojection error
+    o += 8 + 8*_u64(dv,o);                    // track entries: (u32 image_id, u32 idx2)
+  }
+  return {n, col:{x,y,z,red:r,green:g,blue:b},
+          names:["x","y","z","red","green","blue"], kind:"rgb"};
+}
+
+function readPoints3DTxt(buf){
+  const text = new TextDecoder().decode(buf);
+  const xs=[],ys=[],zs=[],rs=[],gs=[],bs=[];
+  for (const line of text.split(/\r?\n/)){
+    const t = line.trim();
+    if (!t || t[0] === "#") continue;
+    const p = t.split(/\s+/);
+    if (p.length < 7) continue;
+    xs.push(+p[1]); ys.push(+p[2]); zs.push(+p[3]);
+    rs.push(+p[4]); gs.push(+p[5]); bs.push(+p[6]);
+  }
+  const n = xs.length;
+  const F = a => Float32Array.from(a);
+  return {n, col:{x:F(xs), y:F(ys), z:F(zs), red:F(rs), green:F(gs), blue:F(bs)},
+          names:["x","y","z","red","green","blue"], kind:"rgb"};
+}
+
+/* COLMAP camera-model id -> parameter count */
+const CAM_PARAMS = {0:3,1:4,2:4,3:5,4:8,5:8,6:12,7:4,8:4,9:5,10:12,11:12};
+const FRUSTUM_PALETTE = [[31,119,180],[255,127,14],[44,160,44],[214,39,40],
+  [148,103,189],[140,86,75],[227,119,194],[127,127,127],[188,189,34],[23,190,207]];
+
+function readImagesBin(buf){
+  const dv = new DataView(buf); let o = 0;
+  const n = _u64(dv,o); o += 8; const out = [];
+  for (let i=0;i<n;i++){
+    o += 4;                                   // image id
+    const q=[dv.getFloat64(o,true),dv.getFloat64(o+8,true),
+             dv.getFloat64(o+16,true),dv.getFloat64(o+24,true)]; o += 32;
+    const t=[dv.getFloat64(o,true),dv.getFloat64(o+8,true),dv.getFloat64(o+16,true)]; o += 24;
+    const camId = dv.getUint32(o,true); o += 4;
+    // COLMAP image names are NUL-terminated byte strings.
+    while (o < dv.byteLength && dv.getUint8(o) !== 0) o++;
+    if (o >= dv.byteLength) throw new Error("images.bin 图像名称缺少结尾 NUL 字节");
+    o++;
+    o += 8 + 24*_u64(dv,o);                   // (double x, double y, int64 point3D id)
+    out.push({q, t, camId});
+  }
+  return out;
+}
+function readImagesTxt(buf){
+  const out = [];
+  for (const line of new TextDecoder().decode(buf).split(/\r?\n/)){
+    const t = line.trim();
+    if (!t || t[0] === "#") continue;
+    const p = t.split(/\s+/);
+    // header rows: id qw qx qy qz tx ty tz cam_id name  -> 10 tokens (10+3k if
+    // some exporters append 2D points on the same row). 2D rows are 3k tokens.
+    if (p.length >= 10 && p.length % 3 !== 0)
+      out.push({q:p.slice(1,5).map(Number), t:p.slice(5,8).map(Number), camId:+p[8]});
+  }
+  return out;
+}
+function readCamerasBin(buf){
+  const dv = new DataView(buf); let o = 0;
+  const n = _u64(dv,o); o += 8; const out = {};
+  for (let i=0;i<n;i++){
+    const id = dv.getUint32(o,true), model = dv.getInt32(o+4,true); o += 8;
+    const w = Number(dv.getBigUint64(o,true)), h = Number(dv.getBigUint64(o+8,true)); o += 16;
+    const np = CAM_PARAMS[model] || 4, params = [];
+    for (let k=0;k<np;k++){ params.push(dv.getFloat64(o,true)); o += 8; }
+    out[id] = {w, h, params};
+  }
+  return out;
+}
+function readCamerasTxt(buf){
+  const out = {};
+  for (const line of new TextDecoder().decode(buf).split(/\r?\n/)){
+    const t = line.trim();
+    if (!t || t[0] === "#") continue;
+    const p = t.split(/\s+/);
+    out[+p[0]] = {w:+p[2], h:+p[3], params:p.slice(4).map(Number)};
+  }
+  return out;
+}
+function qvec2rotmat(q){
+  const [w,x,y,z] = q;
+  return [[1-2*y*y-2*z*z, 2*x*y-2*z*w,   2*z*x+2*y*w],
+          [2*x*y+2*z*w,   1-2*x*x-2*z*z, 2*z*y-2*x*w],
+          [2*z*x-2*y*w,   2*z*y+2*x*w,   1-2*x*x-2*y*y]];
+}
+
+/* build one colored wireframe mesh of frustums; depth in world units */
+function buildFrustumLines(images, cameras, depth){
+  const verts = [], lines = [];
+  images.forEach((im,k)=>{
+    const R = qvec2rotmat(im.q), C = [-R[0][0]*im.t[0]-R[1][0]*im.t[1]-R[2][0]*im.t[2],
+                                      -R[0][1]*im.t[0]-R[1][1]*im.t[1]-R[2][1]*im.t[2],
+                                      -R[0][2]*im.t[0]-R[1][2]*im.t[1]-R[2][2]*im.t[2]];
+    const col = FRUSTUM_PALETTE[k % FRUSTUM_PALETTE.length];
+    const base = verts.length/3;
+    verts.push(...C, ...col);
+    let w=1920, h=1080, f=1500, cx=960, cy=540;
+    const cam = cameras[im.camId];
+    if (cam){
+      w = cam.w; h = cam.h; f = cam.params[0];
+      cx = cam.params.length >= 3 ? cam.params[2] : (w-1)/2;
+      cy = cam.params.length >= 4 ? cam.params[3] : (h-1)/2;
+    }
+    const corners = [];
+    for (const [px,py] of [[0,0],[w,0],[w,h],[0,h]]){
+      let dx=(px-cx)/f, dy=(py-cy)/f;
+      const len = Math.hypot(dx,dy,1);
+      dx = dx/len*depth; const dy2 = dy/len*depth, dz = 1/len*depth;
+      const d = [dx,dy2,dz];
+      corners.push([C[0] + R[0][0]*d[0] + R[1][0]*d[1] + R[2][0]*d[2],
+                    C[1] + R[0][1]*d[0] + R[1][1]*d[1] + R[2][1]*d[2],
+                    C[2] + R[0][2]*d[0] + R[1][2]*d[1] + R[2][2]*d[2]]);
+    }
+    for (const c of corners){ verts.push(...c, ...col); }
+    for (let j=0;j<4;j++){
+      lines.push(base, base+1+j);
+      lines.push(base+1+j, base+1+(j+1)%4);
+    }
+  });
+  const pos = new Float32Array(verts);
+  const colArr = new Float32Array(verts.length);       // RGB bytes -> [0,1]
+  for (let v=0; v<verts.length/6; v++)
+    for (let ch=0; ch<3; ch++) colArr[v*6+3+ch] = verts[v*6+3+ch]/255;
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(colArr, 3));
+  return new THREE.LineSegments(g, new THREE.LineBasicMaterial({vertexColors:true}));
+}
+
+
+function readObj(buf, name){
+  const text = new TextDecoder().decode(buf);
+  const vs = [], vc = [], lines = [];
+  for (const line of text.split(/\r?\n/)){
+    const p = line.trim().split(/\s+/);
+    if (p[0] === "v"){
+      vs.push(+p[1], +p[2], +p[3]);
+      if (p.length >= 7) vc.push(+p[4], +p[5], +p[6]);
+    } else if (p[0] === "l"){
+      for (let i=1; i<p.length-1; i++) lines.push(parseInt(p[i])-1, parseInt(p[i+1])-1);
+    }
+  }
+  const nv = vs.length/3;
+  // v-line colors come as 0..1 or 0..255 depending on the exporter
+  const vmax = vc.reduce((a,v)=>Math.max(a,v), 0);
+  const cscale = vmax > 1.001 ? 1/255 : 1;
+  if (vc.length !== nv*3) for (let i=0;i<nv;i++) vc.push(1,1,1);
+  const pos = new Float32Array(lines.length*3);
+  const col = new Float32Array(lines.length*3);
+  lines.forEach((vi,i)=>{ pos[3*i]=vs[3*vi]; pos[3*i+1]=vs[3*vi+1]; pos[3*i+2]=vs[3*vi+2];
+                          col[3*i]=vc[3*vi]*cscale; col[3*i+1]=vc[3*vi+1]*cscale; col[3*i+2]=vc[3*vi+2]*cscale; });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const m = new THREE.LineBasicMaterial({vertexColors:true});
+  return {name, obj3d: new THREE.LineSegments(g, m), count: nv + "v/" + lines.length + "边",
+          info: nv.toLocaleString() + " 顶点 / " + lines.length.toLocaleString() + " 边", kind:"lines"};
+}
+
+function negateLineY(obj3d){
+  const pos = obj3d.geometry.attributes.position;
+  for (let i=1;i<pos.array.length;i+=3) pos.array[i] = -pos.array[i];
+  pos.needsUpdate = true;
+  obj3d.geometry.computeBoundingSphere();
+}
+
+/* ====================== build point-cloud layers ======================= */
+function buildPoints(parsed, filename){
+  const isGs = parsed.kind === "3dgs";
+  const layer = {name:filename, kind:"points", isGs, n: parsed.n,
+                 xyz:null, sh:null, fdc:null, rgbIn:null, opacity:null, scale:null,
+                 colorKind: parsed.kind};
+  const c = parsed.col;
+  layer.xyz = pack3(c.x, c.y, c.z);
+  if (parsed.kind === "3dgs"){
+    layer.fdc = pack3(c.f_dc_0, c.f_dc_1, c.f_dc_2);
+    layer.opacity = c.opacity ? Float32Array.from(c.opacity, v => 1/(1+Math.exp(-v))) : null;
+    layer.scale = c.scale_0 ? pack3(c.scale_0, c.scale_1, c.scale_2) : null;
+    // gather f_rest into n*48 layout (k=16 bands, rgb interleaved per band).
+    // skip for huge models: caching SH costs 48 floats/point (~190 MB per M points)
+    const restNames = Object.keys(c).filter(k=>k.startsWith("f_rest_"))
+        .sort((a,b)=>parseInt(a.slice(7))-parseInt(b.slice(7)));
+    const cap0 = parseInt($("cap").value.replace(/\D/g,"")) || 3e6;
+    if (restNames.length && parsed.n <= 2*cap0){
+      const k = restNames.length/3 + 1;                    // bands incl. DC
+      const sh = new Float32Array(parsed.n*48);
+      for (let i=0;i<parsed.n;i++){
+        sh[i*48+0]=c.f_dc_0[i]; sh[i*48+1]=c.f_dc_1[i]; sh[i*48+2]=c.f_dc_2[i];
+      }
+      // official layout: [R*(k-1), G*(k-1), B*(k-1)] -> band b channel ch = rest[b-1 + ch*(k-1)]
+      for (let b=1; b<k; b++)
+        for (let ch=0; ch<3; ch++)
+          for (let i=0;i<parsed.n;i++)
+            sh[i*48 + b*3 + ch] = c[restNames[(b-1) + ch*(k-1)]][i];
+      layer.sh = sh; layer.k = k;
+    }
+  } else if (parsed.kind === "rgb"){
+    const cn = findColorNames(Object.keys(c));
+    const arr = c[cn.red];
+    let mx = 0; for (let i=0;i<arr.length;i++) if (arr[i] > mx) mx = arr[i];
+    const div = mx > 1.001 ? 255 : 1;          // 0-255 bytes or 0-1 floats
+    layer.rgbIn = pack3(c[cn.red], c[cn.green], c[cn.blue], div);
+  }
+  layer.rgb = new Float32Array(parsed.n*3);
+  layer.kept = new Uint8Array(parsed.n).fill(1);            // which survive filters
+  layer.tip = "属性: " + parsed.names.slice(0,14).join(" ") +
+              (parsed.names.length > 14 ? " …" : "");
+  rebuildColors(layer);
+  rebuildGeometry(layer);
+  layer.info = isGs ? layer.shown.toLocaleString() + " / " + layer.n.toLocaleString() + " 高斯"
+             : layer.colorKind === "rgb"
+             ? layer.shown.toLocaleString() + " 点 (RGB)"
+             : layer.shown.toLocaleString() + " 点 (无颜色→高度上色)";
+  return layer;
+}
+const pack3 = (a,b,c,d=1) => Float32Array.from({length:a.length*3},
+  (_,i)=> (i%3===0?a[i/3|0] : i%3===1?b[i/3|0] : c[i/3|0]) / d);
+
+function rebuildColors(layer){
+  if (layer.isGs){
+    const n = layer.n, rgb = layer.rgb;
+    if ($("mode").value === "dc" || !layer.sh){
+      for (let i=0;i<n;i++){
+        rgb[3*i]  =Math.min(1,Math.max(0, 0.5 + C0*layer.fdc[3*i]));
+        rgb[3*i+1]=Math.min(1,Math.max(0, 0.5 + C0*layer.fdc[3*i+1]));
+        rgb[3*i+2]=Math.min(1,Math.max(0, 0.5 + C0*layer.fdc[3*i+2]));
+      }
+    } else {
+      const campos = [parseFloat($("cpx").value)||0, parseFloat($("cpy").value)||0,
+                      parseFloat($("cpz").value)||0];
+      shToRgb(n, layer.k, layer.sh, layer.xyz, campos, rgb);
+    }
+  } else if (layer.rgbIn){
+    layer.rgb.set(layer.rgbIn);
+  } else if ($("heightcolor").checked){
+    heightColor(layer);                      // plain cloud -> rainbow by elevation
+  } else {
+    layer.rgb.fill(0.8);
+  }
+  for (let i=0;i<layer.rgb.length;i++)
+    if (!isFinite(layer.rgb[i])) layer.rgb[i] = 0.5;   // corrupt fields -> mid grey
+}
+
+function heightColor(layer){
+  const xyz = layer.xyz, rgb = layer.rgb, n = layer.n;
+  let ymin = Infinity, ymax = -Infinity;
+  for (let i=0;i<n;i++){ const y = xyz[3*i+1]; if (y<ymin) ymin=y; if (y>ymax) ymax=y; }
+  const span = (ymax - ymin) || 1;
+  const stops = [[0.10,0.20,0.80],[0.15,0.75,0.90],[0.20,0.80,0.35],
+                 [0.95,0.85,0.20],[0.90,0.20,0.15]];
+  for (let i=0;i<n;i++){
+    const t = Math.min(0.9999, Math.max(0, (xyz[3*i+1]-ymin)/span)) * (stops.length-1);
+    const k = t|0, f = t-k;
+    for (let ch=0; ch<3; ch++)
+      rgb[3*i+ch] = stops[k][ch]*(1-f) + stops[k+1][ch]*f;
+  }
+}
+
+function rebuildGeometry(layer){
+  // filters + subsample -> (re)build layer.obj3d
+  const n = layer.n, keep = layer.kept;
+  const minOp = parseFloat($("op").value), cap = parseInt($("cap").value.replace(/\D/g,"")) || 3e6;
+  let count = 0;
+  for (let i=0;i<n;i++){
+    let ok = true;
+    if (layer.opacity && layer.opacity[i] < minOp) ok = false;
+    keep[i] = ok ? 1 : 0;
+    if (ok) count++;
+  }
+  const stride = Math.max(1, Math.ceil(count/cap));
+  let m = 0;
+  for (let i=0; i<n; i+=stride) if (keep[i]) m++;
+  const pos = new Float32Array(m*3), col = new Float32Array(m*3);
+  const flip = $("flipY").checked ? -1 : 1;
+  let j = 0;
+  for (let i=0; i<n; i+=stride){
+    if (!keep[i]) continue;
+    pos[3*j]=layer.xyz[3*i]; pos[3*j+1]=flip*layer.xyz[3*i+1]; pos[3*j+2]=layer.xyz[3*i+2];
+    col[3*j]=layer.rgb[3*i]; col[3*j+1]=layer.rgb[3*i+1]; col[3*j+2]=layer.rgb[3*i+2];
+    j++;
+  }
+  if (layer.obj3d){ layer.obj3d.geometry.dispose(); scene.remove(layer.obj3d); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  g.setAttribute("color", new THREE.BufferAttribute(col, 3));
+  const mat = new THREE.PointsMaterial({size:parseFloat($("psz").value), vertexColors:true,
+                                        sizeAttenuation:false});
+  layer.obj3d = new THREE.Points(g, mat);
+  layer.shown = j;
+  scene.add(layer.obj3d);
+}
+
+/* =========================== fit camera to scene ======================= */
+function fitView(){
+  const box = new THREE.Box3();
+  let any = false;
+  for (const L of layers) if (L.obj3d && L.obj3d.visible){ box.expandByObject(L.obj3d); any = true; }
+  if (!any) return;
+  const center = box.getCenter(new THREE.Vector3());
+  const radius = Math.max(box.getSize(new THREE.Vector3()).length()/2, 1e-3);
+  const dir = new THREE.Vector3(0.6, 0.35, 1).normalize();
+  camera.position.copy(center).addScaledVector(dir, radius*2.2);
+  controls.target.copy(center);
+  camera.near = radius/500; camera.far = radius*100;
+  camera.updateProjectionMatrix();
+  controls.update();
+  grid.scale.setScalar(radius); grid.position.set(center.x, box.min.y, center.z);
+}
+
+/* ============================== UI wiring ============================== */
+function renderLayerList(){
+  $("layers").innerHTML = "";
+  layers.forEach((L,i)=>{
+    const d = document.createElement("div"); d.className = "layer";
+    const cb = document.createElement("input"); cb.type="checkbox"; cb.checked = L.obj3d.visible !== false;
+    cb.onchange = ()=>{ L.obj3d.visible = cb.checked; };
+    const sp = document.createElement("span"); sp.textContent = L.name; sp.title = (L.tip ? L.tip + "\n" : "") + (L.info || "");
+    const del = document.createElement("button"); del.textContent = "✕";
+    del.onclick = ()=>{ scene.remove(L.obj3d); L.obj3d.geometry.dispose(); layers.splice(i,1); renderLayerList(); };
+    d.append(cb, sp, del); $("layers").append(d);
+  });
+}
+
+function replaceAndPush(L){
+  const old = layers.findIndex(l => l.name === L.name);
+  if (old >= 0){ scene.remove(layers[old].obj3d); layers[old].obj3d.geometry.dispose(); layers.splice(old,1); }
+  layers.push(L); renderLayerList();
+}
+
+async function loadBuffer(name, buf){
+  name = String(name).replace(/\\/g,"/");
+  const base = name.split("/").pop().toLowerCase();
+  const ext = base.includes(".") ? base.split(".").pop() : "";
+  let L;
+  if (ext === "obj"){
+    L = readObj(buf, name);
+    if ($("flipY").checked) negateLineY(L.obj3d);   // keep frustums aligned with points
+    scene.add(L.obj3d);
+  } else if (ext === "splat"){
+    L = buildPoints(readSplat(buf), name);
+  } else if (base.startsWith("points3d") && (ext === "bin" || ext === "txt")){
+    L = buildPoints(ext === "bin" ? readPoints3DBin(buf) : readPoints3DTxt(buf), name);
+  } else {
+    L = buildPoints(readPlyVertex(buf, name), name);
+  }
+  replaceAndPush(L);
+  fitView();
+  status("已加载 <b>" + name + "</b> — " + L.info);
+  return L;
+}
+
+async function loadOne(fe){
+  const name = fe.path || fe.file.name;
+  status("加载 <b>" + name + "</b> (" + (fe.file.size/1e6).toFixed(1) + " MB) ...");
+  await new Promise(r=>setTimeout(r,30));                 // let the UI paint
+  try{
+    const buf = await fe.file.arrayBuffer();
+    await loadBuffer(name, buf);
+  }catch(e){
+    console.error(e);
+    $("err").textContent = "加载失败: " + name + "\n" + (e.message || e);
+    status("出错了，见左侧红色提示");
+  }
+}
+
+/* COLMAP sparse folder: points3D.* + images.* + cameras.* -> points + frustums */
+async function loadColmapModel(p3, imf, camf){
+  const dir = p3.path.split("/").filter(Boolean).slice(0, -1);   // drop the filename
+  const label = dir.length >= 2 ? dir.slice(-2).join("/") : (dir[0] || "colmap");
+  const buf3 = await p3.file.arrayBuffer();
+  const base3 = p3.path.split("/").pop().toLowerCase();
+  await loadBuffer(label + "/" + base3, buf3);
+  if (!imf || !camf){
+    status("已加载点云（拖入 images.*/cameras.* 可同时显示相机视锥）");
+    return;
+  }
+  try{
+    const bi = await imf.file.arrayBuffer(), bc = await camf.file.arrayBuffer();
+    const images = imf.path.toLowerCase().endsWith(".bin") ? readImagesBin(bi) : readImagesTxt(bi);
+    const cameras = camf.path.toLowerCase().endsWith(".bin") ? readCamerasBin(bc) : readCamerasTxt(bc);
+    let diag = 1;
+    const pts = layers.filter(l => l.kind === "points");
+    if (pts.length){
+      const box = new THREE.Box3();
+      for (const L of pts) box.expandByObject(L.obj3d);
+      diag = box.getSize(new THREE.Vector3()).length() || 1;
+    }
+    const obj3d = buildFrustumLines(images, cameras, 0.08*diag);
+    if ($("flipY").checked) negateLineY(obj3d);
+    scene.add(obj3d);
+    replaceAndPush({name: label + "/cameras", kind:"lines", obj3d,
+                    info: images.length + " 相机视锥", tip: "COLMAP images.* + cameras.*"});
+    status("已加载 COLMAP 模型 <b>" + label + "</b> — 点云 + " + images.length + " 相机视锥");
+    fitView();
+  }catch(e){
+    // the point cloud layer is already in the scene -> keep it, report the frustum failure
+    console.error(e);
+    status("点云已加载；<b>相机视锥解析失败</b>（" +
+           (imf.path.split("/").pop()) + " / " + (camf.path.split("/").pop()) +
+           "）： " + (e.message || e));
+  }
+}
+
+/* only these files are relevant; everything else (project.ini, photos, json...) is skipped */
+const RE_POINTCLOUD = /\.(ply|splat|obj)$/i;
+const RE_COLMAP = /^(points3d|images|cameras)\.(bin|txt)$/i;
+function isRelevant(fe){
+  const nm = fe.path.split("/").pop().toLowerCase();
+  return RE_POINTCLOUD.test(nm) || RE_COLMAP.test(nm);
+}
+
+async function handleFiles(fileEntries){
+  if (!fileEntries || !fileEntries.length) return;
+  const relevant = fileEntries.filter(isRelevant);
+  const skipped = fileEntries.length - relevant.length;
+  if (!relevant.length){
+    status("没有找到可加载的文件（需要 .ply / .splat / .obj 或 COLMAP 的 points3D/images/cameras）");
+    return;
+  }
+  if (skipped) status("忽略 " + skipped + " 个无关文件，只读取点云/模型文件 ...");
+  const byBase = {};
+  for (const fe of relevant) byBase[fe.path.split("/").pop().toLowerCase()] = fe;
+  const p3 = byBase["points3d.bin"] || byBase["points3d.txt"];
+  if (p3){
+    const imf  = byBase["images.bin"]  || byBase["images.txt"];
+    const camf = byBase["cameras.bin"] || byBase["cameras.txt"];
+    try{
+      await loadColmapModel(p3, imf, camf);
+    }catch(e){
+      console.error(e);
+      $("err").textContent = "COLMAP 模型加载失败:\n" + (e.message || e);
+      status("出错了，见左侧红色提示");
+    }
+    for (const fe of relevant){                    // anything else alongside
+      const nm = fe.path.split("/").pop().toLowerCase();
+      if (fe === p3 || nm.startsWith("images.") || nm.startsWith("cameras.")) continue;
+      await loadOne(fe);
+    }
+    return;
+  }
+  for (const fe of relevant) await loadOne(fe);
+}
+
+/* drag & drop incl. whole folders (Chromium webkit entries) */
+async function collectFromEntries(entries){
+  const out = [];
+  async function walk(entry, prefix){
+    if (out.length > 8000) return;                 // safety cap for huge dataset roots
+    if (entry.isFile){
+      const f = await new Promise((res,rej)=>entry.file(res,rej));
+      out.push({file:f, path: prefix + f.name});
+    } else if (entry.isDirectory){
+      const reader = entry.createReader();
+      for(;;){                                     // readEntries paginates at 100
+        const batch = await new Promise((res,rej)=>reader.readEntries(res,rej));
+        if (!batch.length) break;
+        for (const e of batch) await walk(e, prefix + entry.name + "/");
+      }
+    }
+  }
+  for (const en of entries) await walk(en, "");
+  return out;
+}
+
+$("file").onchange = e => {
+  handleFiles([...e.target.files].map(f=>({file:f, path:f.name})));
+  e.target.value = "";
+};
+addEventListener("dragover", e=>{ e.preventDefault(); $("drop").style.display = "flex"; });
+addEventListener("dragleave", e=>{ if (e.target === document.body || e.clientX<=0) $("drop").style.display="none"; });
+addEventListener("drop", e=>{
+  e.preventDefault(); $("drop").style.display="none";
+  const entries = [...(e.dataTransfer.items || [])]
+      .map(i => i.webkitGetAsEntry && i.webkitGetAsEntry()).filter(Boolean);
+  if (entries.length) collectFromEntries(entries).then(handleFiles);
+  else handleFiles([...e.dataTransfer.files].map(f=>({file:f, path:f.name})));
+});
+$("openFile").onclick = () => $("file").click();
+$("openFolder").onclick = () => $("folder").click();
+$("folder").onchange = e => {
+  handleFiles([...e.target.files].map(f => ({file:f, path: f.webkitRelativePath || f.name})));
+  e.target.value = "";
+};
+$("mode").onchange = () => {
+  $("campos").style.display = $("mode").value === "sh" ? "block" : "none";
+  recolorAll();
+};
+$("applySh").onclick = recolorAll;
+$("op").oninput = () => { $("opv").textContent = (+$("op").value).toFixed(2); rebuildAll(); };
+$("psz").oninput = () => { $("pszv").textContent = $("psz").value + " px";
+  for (const L of layers) if (L.obj3d && L.obj3d.isPoints) L.obj3d.material.size = +$("psz").value; };
+$("cap").onchange = rebuildAll;
+$("flipY").onchange = () => {
+  for (const L of layers){
+    if (L.kind === "points") rebuildGeometry(L);
+    else negateLineY(L.obj3d);                     // keep frustums/OBJ aligned with points
+  }
+};
+$("heightcolor").onchange = recolorAll;
+$("grid").onchange = () => grid.visible = $("grid").checked;
+$("bgdark").onchange = () => scene.background.set($("bgdark").checked ? 0x101418 : 0xf2f4f7);
+$("reset").onclick = fitView;
+$("shot").onclick = () => { renderer.render(scene, camera);
+  const a = document.createElement("a");
+  a.download = "viewer_screenshot.png"; a.href = renderer.domElement.toDataURL("image/png");
+  a.click(); };
+$("panelToggle").onclick = () => { const p = $("panel"); p.classList.toggle("collapsed");
+  const hide = p.classList.contains("collapsed");
+  for (const el of p.children) if (el.id !== "panelToggle" && el.tagName !== "H1")
+    el.style.display = hide ? "none" : "";
+  $("panelToggle").textContent = hide ? "+" : "–"; };
+
+function recolorAll(){ for (const L of layers) if (L.kind==="points"){ rebuildColors(L); rebuildGeometry(L); } }
+function rebuildAll(){ for (const L of layers) if (L.kind==="points") rebuildGeometry(L); }
+
+/* auto-load ?url=..., and drag helper text */
+status("就绪 — 打开或拖入 .ply / .splat / .obj（需 libs/ 目录在本文件旁）");
+(async () => {
+  const q = new URLSearchParams(location.search).get("url");
+  if (!q) return;
+  try{
+    status("从 URL 加载 " + q + " ...");
+    const r = await fetch(q);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    await loadBuffer(q.split("/").pop(), await r.arrayBuffer());
+  }catch(e){ $("err").textContent = "URL 加载失败: " + e.message; status("URL 加载失败"); }
+})();
+</script>
+</body>
+</html>

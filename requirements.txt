@@ -1,0 +1,4 @@
+numpy>=1.21
+# matplotlib>=3.5  # optional, for render_preview.py
+# optional, for view_ply.py interactive viewer:
+# open3d>=0.17
